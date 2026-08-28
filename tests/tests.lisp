@@ -114,6 +114,36 @@
         (lease-release lease))
       (check (= (probe-exit-code) 0)
              "another process could not lock a released lease file")))
+  (let* ((pathname (merge-pathnames "foreign-holder.lock" root))
+         (ready (merge-pathnames "foreign-holder.ready" root))
+         (holder
+           (format nil
+                   "(let ((descriptor (sb-posix:open ~S ~
+                                       (logior sb-posix:o-creat ~
+                                               sb-posix:o-rdwr) ~
+                                       #o600))) ~
+                      (sb-posix:lockf descriptor sb-posix:f-lock 0) ~
+                      (with-open-file (stream ~S :direction :output ~
+                                              :if-does-not-exist :create) ~
+                        (princ :ready stream)) ~
+                      (sleep 5) ~
+                      (sb-posix:exit 0))"
+                   (namestring pathname)
+                   (namestring ready)))
+         (process
+           (uiop:launch-program
+            (list "sbcl" "--noinform" "--non-interactive"
+                  "--no-sysinit" "--no-userinit"
+                  "--eval" "(require :sb-posix)"
+                  "--eval" holder))))
+    (unwind-protect
+         (progn
+           (loop until (probe-file ready)
+                 do (sleep 0.05))
+           (check (signals file-lock-busy (lease-acquire pathname))
+                  "a lock held by another process was not reported busy"))
+      (uiop:terminate-process process :urgent t)
+      (ignore-errors (uiop:wait-process process))))
   nil)
 
 (defun run-tests ()

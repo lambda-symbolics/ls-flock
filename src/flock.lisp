@@ -146,7 +146,11 @@ as the former owner has released it or exited."
              (progn
                (handler-case
                    (osicat-posix:lockf descriptor osicat-posix:f-tlock 0)
-                 ((or osicat-posix:eacces osicat-posix:eagain) ()
+                 ;; POSIX allows either EACCES or EAGAIN for a held lock,
+                 ;; and Linux reports errno 11 under its EWOULDBLOCK name.
+                 ((or osicat-posix:eacces
+                      osicat-posix:eagain
+                      osicat-posix:ewouldblock) ()
                    (flock--busy pathname))
                  (file-lock-error (condition)
                    (error condition))
