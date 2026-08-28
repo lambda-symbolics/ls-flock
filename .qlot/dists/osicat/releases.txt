@@ -1,0 +1,2 @@
+# project url size file-md5 content-sha1 prefix [system-file1..system-fileN]
+osicat http://beta.quicklisp.org/archive/osicat/2026-01-01/osicat-20260101-git.tgz 66444 0e674967063c6af90f85ae949e22426c a38ca3c52237e97f0822f51ea1f42b0da18af320 osicat-20260101-git osicat.asd

@@ -166,6 +166,27 @@ as the former owner has released it or exited."
           (unless acquired-p
             (ignore-errors (osicat-posix:close descriptor))))))))
 
+(defun reset-after-fork ()
+  "Drop lock state a fork child inherited from its parent.
+
+POSIX record locks are not inherited across fork: the child owns none
+of its parent's locks, while the copied tables claim otherwise. This
+closes the child's copies of held lease descriptors, marks those
+leases released, and clears both in-process tables. Call it in a fork
+child before using ls-flock, never in a process whose own leases are
+still live."
+  (bordeaux-threads:with-lock-held (*flock-table-lock*)
+    (maphash (lambda (key lease)
+               (declare (ignore key))
+               (let ((descriptor (lease--descriptor lease)))
+                 (when descriptor
+                   (setf (lease--descriptor lease) nil)
+                   (ignore-errors (osicat-posix:close descriptor)))))
+             *flock-held-leases*)
+    (clrhash *flock-held-leases*)
+    (clrhash *flock-in-process-locks*))
+  nil)
+
 (defun lease-release (lease)
   "Release LEASE idempotently.
 

@@ -84,6 +84,19 @@
       (lease-release replacement)))
   nil)
 
+(defun tests--fork-reset (root)
+  "Exercise the fork child table reset without an actual fork."
+  (let* ((pathname (merge-pathnames "fork-reset.lock" root))
+         (lease (lease-acquire pathname)))
+    (reset-after-fork)
+    (check (not (lease-held-p lease))
+           "reset did not mark inherited leases released")
+    (let ((replacement (lease-acquire pathname)))
+      (check (lease-held-p replacement)
+             "reset state blocked a fresh acquisition")
+      (lease-release replacement)))
+  nil)
+
 (defun tests--cross-process (root)
   "Prove leases exclude other processes, not only other threads."
   (let* ((pathname (merge-pathnames "processes.lock" root))
@@ -161,6 +174,7 @@
            (tests--scoped-locks root)
            (tests--thread-exclusion root)
            (tests--leases root)
+           (tests--fork-reset root)
            #+sbcl (tests--cross-process root))
       (uiop:delete-directory-tree root
                                   :validate t

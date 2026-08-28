@@ -1,0 +1,6 @@
+name: bordeaux-threads
+version: ql-2024-10-12
+distinfo-subscription-url: qlot://localhost/bordeaux-threads.txt
+canonical-distinfo-url: qlot://localhost/bordeaux-threads.txt
+release-index-url: qlot://localhost/bordeaux-threads/ql-2024-10-12/releases.txt
+system-index-url: qlot://localhost/bordeaux-threads/ql-2024-10-12/systems.txt

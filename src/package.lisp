@@ -10,4 +10,5 @@
            #:lease-held-p
            #:lease-pathname
            #:lease-release
+           #:reset-after-fork
            #:with-file-lock))

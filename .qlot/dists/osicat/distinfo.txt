@@ -1,0 +1,6 @@
+name: osicat
+version: ql-2026-01-01
+distinfo-subscription-url: qlot://localhost/osicat.txt
+canonical-distinfo-url: qlot://localhost/osicat.txt
+release-index-url: qlot://localhost/osicat/ql-2026-01-01/releases.txt
+system-index-url: qlot://localhost/osicat/ql-2026-01-01/systems.txt

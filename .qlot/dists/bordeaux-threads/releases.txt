@@ -1,0 +1,2 @@
+# project url size file-md5 content-sha1 prefix [system-file1..system-fileN]
+bordeaux-threads http://beta.quicklisp.org/archive/bordeaux-threads/2024-10-12/bordeaux-threads-v0.9.4.tgz 3063105 ec2deecfc63871a5b4ab363529103c87 1f6e639c434d6159e5ea90bb2f3197190ae160b8 bordeaux-threads-v0.9.4 bordeaux-threads.asd

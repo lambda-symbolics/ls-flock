@@ -38,6 +38,9 @@ process owns the lock, acquisition signals =FILE-LOCK-BUSY=, a subtype of
 liveness, and a crashed owner's leftover lock file is reusable immediately
 because the operating system drops the lock with the process.
 
+A fork child inherits the parent's tables but none of its POSIX locks;
+call =RESET-AFTER-FORK= in the child before using ls-flock there.
+
 * Tests
 
 #+BEGIN_SRC lisp
