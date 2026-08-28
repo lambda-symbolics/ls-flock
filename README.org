@@ -1,0 +1,50 @@
+#+TITLE: ls-flock
+#+STARTUP: content
+
+=ls-flock= provides process-shared advisory file locks over POSIX =lockf=,
+paired with the in-process mutex that POSIX record locks silently omit:
+record locks never conflict within the owning process, so every lock file
+carries one process-wide mutex too. Two threads of one image and two
+processes on one host exclude each other the same way.
+
+* Scoped locks
+
+#+BEGIN_SRC lisp
+(ls-flock:with-file-lock (#P"/var/lib/app/store.lock")
+  (rewrite-the-store))
+
+(ls-flock:call-with-file-lock #P"/var/lib/app/store.lock"
+                              (lambda () (rewrite-the-store)))
+#+END_SRC
+
+Scoped locks wait for other holders. The lock file is created with mode
+=0600= (override with =:mode=) and intentionally left behind on release so
+later holders can reuse it. Acquisition failures signal =FILE-LOCK-ERROR=;
+conditions from the body propagate unchanged and still release the lock.
+
+* Exclusive leases
+
+#+BEGIN_SRC lisp
+(let ((lease (ls-flock:lease-acquire #P"/var/lib/app/session.lock")))
+  (unwind-protect
+       (serve-the-session)
+    (ls-flock:lease-release lease)))
+#+END_SRC
+
+A lease is a process-lifetime exclusive claim acquired without waiting.
+When this process already holds a live lease on the pathname, or another
+process owns the lock, acquisition signals =FILE-LOCK-BUSY=, a subtype of
+=FILE-LOCK-ERROR=. =LEASE-RELEASE= is idempotent, =LEASE-HELD-P= reports
+liveness, and a crashed owner's leftover lock file is reusable immediately
+because the operating system drops the lock with the process.
+
+* Tests
+
+#+BEGIN_SRC lisp
+(asdf:test-system :ls-flock)
+#+END_SRC
+
+The suite includes a cross-process probe that spawns a second Lisp to
+prove operating-system-level exclusion, not only thread-level exclusion.
+
+Part of the [[https://www.lambda-symbolics.com/libraries][Lambda Symbolics library shelf]].
