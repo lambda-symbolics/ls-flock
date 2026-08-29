@@ -5,7 +5,7 @@
   :version "0.1.0"
   :serial t
   :depends-on (#:bordeaux-threads
-               #:osicat)
+               #:sb-posix)
   :components ((:module "src"
                 :serial t
                 :components ((:file "package")

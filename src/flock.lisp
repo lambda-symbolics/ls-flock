@@ -63,9 +63,9 @@
   (handler-case
       (progn
         (ensure-directories-exist pathname)
-        (osicat-posix:open (namestring pathname)
-                           (logior osicat-posix:o-creat
-                                   osicat-posix:o-rdwr)
+        (sb-posix:open (namestring pathname)
+                       (logior sb-posix:o-creat
+                               sb-posix:o-rdwr)
                            mode))
     (error (cause)
       (flock--fail pathname "Could not open the lock file: ~A" cause))))
@@ -86,15 +86,15 @@ from FUNCTION propagate unchanged."
       (unwind-protect
            (progn
              (handler-case
-                 (osicat-posix:lockf descriptor osicat-posix:f-lock 0)
+                 (sb-posix:lockf descriptor sb-posix:f-lock 0)
                (error (cause)
                  (flock--fail pathname "Could not acquire the lock: ~A"
                               cause)))
              (funcall function))
         (ignore-errors
-          (osicat-posix:lockf descriptor osicat-posix:f-ulock 0))
+          (sb-posix:lockf descriptor sb-posix:f-ulock 0))
         (ignore-errors
-          (osicat-posix:close descriptor))))))
+          (sb-posix:close descriptor))))))
 
 (defmacro with-file-lock ((pathname &key (mode #o600)) &body body)
   "Evaluate BODY while exclusively holding PATHNAME's advisory lock."
@@ -145,13 +145,17 @@ as the former owner has released it or exited."
         (unwind-protect
              (progn
                (handler-case
-                   (osicat-posix:lockf descriptor osicat-posix:f-tlock 0)
+                   (sb-posix:lockf descriptor sb-posix:f-tlock 0)
                  ;; POSIX allows either EACCES or EAGAIN for a held lock,
                  ;; and Linux reports errno 11 under its EWOULDBLOCK name.
-                 ((or osicat-posix:eacces
-                      osicat-posix:eagain
-                      osicat-posix:ewouldblock) ()
-                   (flock--busy pathname))
+                 (sb-posix:syscall-error (condition)
+                   (if (member (sb-posix:syscall-errno condition)
+                               (list sb-posix:eacces sb-posix:eagain)
+                               :test #'=)
+                       (flock--busy pathname)
+                       (flock--fail pathname
+                                    "Could not acquire the lock: ~A"
+                                    condition)))
                  (file-lock-error (condition)
                    (error condition))
                  (error (cause)
@@ -164,7 +168,7 @@ as the former owner has released it or exited."
                        acquired-p t)
                  lease))
           (unless acquired-p
-            (ignore-errors (osicat-posix:close descriptor))))))))
+            (ignore-errors (sb-posix:close descriptor))))))))
 
 (defun reset-after-fork ()
   "Drop lock state a fork child inherited from its parent.
@@ -181,7 +185,7 @@ still live."
                (let ((descriptor (lease--descriptor lease)))
                  (when descriptor
                    (setf (lease--descriptor lease) nil)
-                   (ignore-errors (osicat-posix:close descriptor)))))
+                   (ignore-errors (sb-posix:close descriptor)))))
              *flock-held-leases*)
     (clrhash *flock-held-leases*)
     (clrhash *flock-in-process-locks*))
@@ -200,7 +204,7 @@ unlock reports an operating-system failure."
           (remhash key *flock-held-leases*))
         (setf (lease--descriptor lease) nil)
         (ignore-errors
-          (osicat-posix:lockf descriptor osicat-posix:f-ulock 0))
+          (sb-posix:lockf descriptor sb-posix:f-ulock 0))
         (ignore-errors
-          (osicat-posix:close descriptor)))))
+          (sb-posix:close descriptor)))))
   nil)

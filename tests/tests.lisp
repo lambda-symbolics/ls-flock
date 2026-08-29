@@ -25,8 +25,8 @@
            "a scoped lock did not return its body value")
     (check (probe-file pathname)
            "the lock file was not left behind for later holders")
-    (check (= (logand (osicat-posix:stat-mode
-                       (osicat-posix:stat (namestring pathname)))
+    (check (= (logand (sb-posix:stat-mode
+                       (sb-posix:stat (namestring pathname)))
                       #o777)
               #o600)
            "the lock file was not created private")
