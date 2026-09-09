@@ -9,7 +9,9 @@
   :components ((:module "src"
                 :serial t
                 :components ((:file "package")
-                             (:file "flock"))))
+                             (:file "flock")
+                             (:file "posix" :if-feature (:not :win32))
+                             (:file "win32" :if-feature :win32))))
   :in-order-to ((asdf:test-op (asdf:test-op #:ls-flock/tests))))
 
 (asdf:defsystem #:ls-flock/tests

@@ -41,7 +41,10 @@
 
 ;;; POSIX record locks never conflict within the owning process, so every
 ;;; lock file is paired with one process-wide mutex. Without it, two threads
-;;; of one image would both pass the operating-system lock.
+;;; of one image would both pass the operating-system lock. Windows locks do
+;;; conflict between handles of one process, but the mutex keeps the two
+;;; halves behaving alike and makes reentrancy detection independent of the
+;;; host.
 
 (defvar *flock-table-lock*
   (bordeaux-threads:make-lock "ls-flock tables")
@@ -58,18 +61,6 @@
           (setf (gethash key *flock-in-process-locks*)
                 (bordeaux-threads:make-lock key))))))
 
-(defun flock--open (pathname mode)
-  "Return an open descriptor for lock file PATHNAME, creating it with MODE."
-  (handler-case
-      (progn
-        (ensure-directories-exist pathname)
-        (sb-posix:open (namestring pathname)
-                       (logior sb-posix:o-creat
-                               sb-posix:o-rdwr)
-                           mode))
-    (error (cause)
-      (flock--fail pathname "Could not open the lock file: ~A" cause))))
-
 
 ;;;; -- Scoped Locks --
 
@@ -85,16 +76,10 @@ from FUNCTION propagate unchanged."
     (let ((descriptor (flock--open pathname mode)))
       (unwind-protect
            (progn
-             (handler-case
-                 (sb-posix:lockf descriptor sb-posix:f-lock 0)
-               (error (cause)
-                 (flock--fail pathname "Could not acquire the lock: ~A"
-                              cause)))
+             (flock--lock descriptor pathname)
              (funcall function))
-        (ignore-errors
-          (sb-posix:lockf descriptor sb-posix:f-ulock 0))
-        (ignore-errors
-          (sb-posix:close descriptor))))))
+        (flock--unlock descriptor)
+        (flock--close descriptor)))))
 
 (defmacro with-file-lock ((pathname &key (mode #o600)) &body body)
   "Evaluate BODY while exclusively holding PATHNAME's advisory lock."
@@ -144,23 +129,7 @@ as the former owner has released it or exited."
             (acquired-p nil))
         (unwind-protect
              (progn
-               (handler-case
-                   (sb-posix:lockf descriptor sb-posix:f-tlock 0)
-                 ;; POSIX allows either EACCES or EAGAIN for a held lock,
-                 ;; and Linux reports errno 11 under its EWOULDBLOCK name.
-                 (sb-posix:syscall-error (condition)
-                   (if (member (sb-posix:syscall-errno condition)
-                               (list sb-posix:eacces sb-posix:eagain)
-                               :test #'=)
-                       (flock--busy pathname)
-                       (flock--fail pathname
-                                    "Could not acquire the lock: ~A"
-                                    condition)))
-                 (file-lock-error (condition)
-                   (error condition))
-                 (error (cause)
-                   (flock--fail pathname "Could not acquire the lock: ~A"
-                                cause)))
+               (flock--try-lock descriptor pathname)
                (let ((lease (make-instance 'lease
                                            :pathname pathname
                                            :descriptor descriptor)))
@@ -168,7 +137,7 @@ as the former owner has released it or exited."
                        acquired-p t)
                  lease))
           (unless acquired-p
-            (ignore-errors (sb-posix:close descriptor))))))))
+            (flock--close descriptor)))))))
 
 (defun reset-after-fork ()
   "Drop lock state a fork child inherited from its parent.
@@ -185,7 +154,7 @@ still live."
                (let ((descriptor (lease--descriptor lease)))
                  (when descriptor
                    (setf (lease--descriptor lease) nil)
-                   (ignore-errors (sb-posix:close descriptor)))))
+                   (flock--close descriptor))))
              *flock-held-leases*)
     (clrhash *flock-held-leases*)
     (clrhash *flock-in-process-locks*))
@@ -203,8 +172,6 @@ unlock reports an operating-system failure."
         (when (eq (gethash key *flock-held-leases*) lease)
           (remhash key *flock-held-leases*))
         (setf (lease--descriptor lease) nil)
-        (ignore-errors
-          (sb-posix:lockf descriptor sb-posix:f-ulock 0))
-        (ignore-errors
-          (sb-posix:close descriptor)))))
+        (flock--unlock descriptor)
+        (flock--close descriptor))))
   nil)
