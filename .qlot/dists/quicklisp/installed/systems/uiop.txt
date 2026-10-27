@@ -1,1 +1,0 @@
-dists/quicklisp/software/uiop-3.3.7/uiop.asd
