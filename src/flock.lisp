@@ -4,14 +4,14 @@
 
 (define-condition file-lock-error (error)
   ((message
-    :initarg :message
-    :reader file-lock-error-message
-    :type string
+    :initarg       :message
+    :reader        file-lock-error-message
+    :type          string
     :documentation "The human-readable description of the failure.")
    (pathname
-    :initarg :pathname
-    :reader file-lock-error-pathname
-    :type pathname
+    :initarg       :pathname
+    :reader        file-lock-error-pathname
+    :type          pathname
     :documentation "The lock file involved in the failure."))
   (:report
    (lambda (condition stream)
@@ -27,13 +27,13 @@
 (defun flock--busy (pathname)
   "Signal FILE-LOCK-BUSY for PATHNAME."
   (error 'file-lock-busy
-         :message "The advisory lock is held elsewhere."
+         :message  "The advisory lock is held elsewhere."
          :pathname pathname))
 
 (defun flock--fail (pathname message &rest arguments)
   "Signal FILE-LOCK-ERROR for PATHNAME described by MESSAGE."
   (error 'file-lock-error
-         :message (apply #'format nil message arguments)
+         :message  (apply #'format nil message arguments)
          :pathname pathname))
 
 
@@ -90,14 +90,14 @@ from FUNCTION propagate unchanged."
 
 (defclass lease ()
   ((pathname
-    :initarg :pathname
-    :reader lease-pathname
-    :type pathname
+    :initarg       :pathname
+    :reader        lease-pathname
+    :type          pathname
     :documentation "The persistent file carrying the process-shared lock.")
    (descriptor
-    :initarg :descriptor
-    :accessor lease--descriptor
-    :type (or null integer)
+    :initarg       :descriptor
+    :accessor      lease--descriptor
+    :type          (or null integer)
     :documentation "The open descriptor holding the lock, or NIL after release."))
   (:documentation "A process-lifetime exclusive lease on one lock file."))
 
@@ -116,7 +116,7 @@ PATHNAME or another process owns the lock. The empty lock file may
 remain after release or a crash; a later acquisition reuses it as soon
 as the former owner has released it or exited."
   (bordeaux-threads:with-lock-held (*flock-table-lock*)
-    (let* ((key (namestring pathname))
+    (let* ((key      (namestring pathname))
            (existing (gethash key *flock-held-leases*)))
       ;; The registry check and the operating-system lock must fall under
       ;; one mutex: POSIX record locks never conflict within the owning
@@ -131,7 +131,7 @@ as the former owner has released it or exited."
              (progn
                (flock--try-lock descriptor pathname)
                (let ((lease (make-instance 'lease
-                                           :pathname pathname
+                                           :pathname   pathname
                                            :descriptor descriptor)))
                  (setf (gethash key *flock-held-leases*) lease
                        acquired-p t)
@@ -167,7 +167,7 @@ Closing the descriptor is the final authority even when an explicit
 unlock reports an operating-system failure."
   (bordeaux-threads:with-lock-held (*flock-table-lock*)
     (let ((descriptor (lease--descriptor lease))
-          (key (namestring (lease-pathname lease))))
+          (key        (namestring (lease-pathname lease))))
       (when descriptor
         (when (eq (gethash key *flock-held-leases*) lease)
           (remhash key *flock-held-leases*))

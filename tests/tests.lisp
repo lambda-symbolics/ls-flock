@@ -45,10 +45,10 @@
 
 (defun tests--thread-exclusion (root)
   "Prove two threads of one process exclude each other."
-  (let ((pathname (merge-pathnames "threads.lock" root))
-        (inside-p nil)
+  (let ((pathname     (merge-pathnames "threads.lock" root))
+        (inside-p     nil)
         (overlapped-p nil)
-        (visits 0))
+        (visits       0))
     (flet ((visit ()
              (with-file-lock (pathname)
                (when inside-p
@@ -67,7 +67,7 @@
 (defun tests--leases (root)
   "Exercise process-lifetime exclusive leases beneath ROOT."
   (let* ((pathname (merge-pathnames "lease.lock" root))
-         (lease (lease-acquire pathname)))
+         (lease    (lease-acquire pathname)))
     (check (lease-held-p lease)
            "a fresh lease does not report itself held")
     (check (equal (namestring (lease-pathname lease)) (namestring pathname))
@@ -87,7 +87,7 @@
 (defun tests--fork-reset (root)
   "Exercise the fork child table reset without an actual fork."
   (let* ((pathname (merge-pathnames "fork-reset.lock" root))
-         (lease (lease-acquire pathname)))
+         (lease    (lease-acquire pathname)))
     (reset-after-fork)
     (check (not (lease-held-p lease))
            "reset did not mark inherited leases released")
@@ -112,7 +112,7 @@
                             (sb-posix:exit 0)) ~
                         (error () (sb-posix:exit 7))))"
                    (namestring pathname)))
-         (lease (lease-acquire pathname)))
+         (lease    (lease-acquire pathname)))
     (flet ((probe-exit-code ()
              (nth-value 2
                         (uiop:run-program
@@ -128,7 +128,7 @@
       (check (= (probe-exit-code) 0)
              "another process could not lock a released lease file")))
   (let* ((pathname (merge-pathnames "foreign-holder.lock" root))
-         (ready (merge-pathnames "foreign-holder.ready" root))
+         (ready    (merge-pathnames "foreign-holder.ready" root))
          (holder
            (format nil
                    "(let ((descriptor (sb-posix:open ~S ~
@@ -177,7 +177,7 @@
            (tests--fork-reset root)
            #+sbcl (tests--cross-process root))
       (uiop:delete-directory-tree root
-                                  :validate t
+                                  :validate          t
                                   :if-does-not-exist :ignore)))
   (format t "~&~:D ls-flock tests passed.~%" *assertions*)
   nil)

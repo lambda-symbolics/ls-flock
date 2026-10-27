@@ -14,7 +14,7 @@
         (sb-posix:open (namestring pathname)
                        (logior sb-posix:o-creat
                                sb-posix:o-rdwr)
-                           mode))
+                       mode))
     (error (cause)
       (flock--fail pathname "Could not open the lock file: ~A" cause))))
 
