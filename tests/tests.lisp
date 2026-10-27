@@ -1,4 +1,5 @@
 (defpackage #:ls-flock/tests
+  (:documentation "Regression tests for ls-flock.")
   (:use #:cl)
   (:import-from #:ls-flock
                 #:call-with-file-lock

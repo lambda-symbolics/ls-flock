@@ -1,4 +1,5 @@
 (defpackage #:ls-flock
+  (:documentation "Process-shared advisory file locks and exclusive leases.")
   (:use #:cl)
   (:export #:call-with-file-lock
            #:file-lock-busy
