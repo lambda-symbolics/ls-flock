@@ -1,5 +1,14 @@
 (defpackage #:ls-flock/tests
-  (:use #:cl #:ls-flock)
+  (:use #:cl)
+  (:import-from #:ls-flock
+                #:call-with-file-lock
+                #:file-lock-busy
+                #:lease-acquire
+                #:lease-held-p
+                #:lease-pathname
+                #:lease-release
+                #:reset-after-fork
+                #:with-file-lock)
   (:export #:run-tests))
 
 (in-package #:ls-flock/tests)
