@@ -127,15 +127,17 @@ permission bits to apply on creation."
   nil)
 
 (defun flock--unlock (descriptor)
-  "Release the lock held through DESCRIPTOR, ignoring failures."
-  (ignore-errors
-    (flock--call-with-overlapped
-     (lambda (overlapped)
-       (flock--unlock-file-ex descriptor 0 1 0 overlapped))))
+  "Release the lock held through DESCRIPTOR, ignoring failures.
+
+UnlockFileEx reports failure through its return value, which this discards."
+  (flock--call-with-overlapped
+   (lambda (overlapped)
+     (flock--unlock-file-ex descriptor 0 1 0 overlapped)))
   nil)
 
 (defun flock--close (descriptor)
-  "Close DESCRIPTOR, ignoring failures."
-  (ignore-errors
-    (flock--close-handle descriptor))
+  "Close DESCRIPTOR, ignoring failures.
+
+CloseHandle reports failure through its return value, which this discards."
+  (flock--close-handle descriptor)
   nil)
