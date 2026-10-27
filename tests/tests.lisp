@@ -14,7 +14,8 @@
 
 (in-package #:ls-flock/tests)
 
-(defvar *assertions* 0)
+(defvar *assertions* 0
+  "The number of assertions the current test run has checked.")
 
 (defun check (value control &rest arguments)
   "Count one assertion and fail with CONTROL unless VALUE is true."
