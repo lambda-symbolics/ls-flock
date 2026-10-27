@@ -46,12 +46,16 @@
 
 (defun flock--unlock (descriptor)
   "Release the lock held through DESCRIPTOR, ignoring failures."
-  (ignore-errors
-    (sb-posix:lockf descriptor sb-posix:f-ulock 0))
+  (handler-case
+      (sb-posix:lockf descriptor sb-posix:f-ulock 0)
+    (sb-posix:syscall-error ()
+      nil))
   nil)
 
 (defun flock--close (descriptor)
   "Close DESCRIPTOR, ignoring failures."
-  (ignore-errors
-    (sb-posix:close descriptor))
+  (handler-case
+      (sb-posix:close descriptor)
+    (sb-posix:syscall-error ()
+      nil))
   nil)
