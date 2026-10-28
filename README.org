@@ -1,11 +1,11 @@
 #+TITLE: ls-flock
 #+STARTUP: content
 
-=ls-flock= provides process-shared advisory file locks over POSIX =lockf=,
-paired with the in-process mutex that POSIX record locks silently omit:
-record locks never conflict within the owning process, so every lock file
-carries one process-wide mutex too. Two threads of one image and two
-processes on one host exclude each other the same way.
+=ls-flock= provides process-shared advisory file locks over POSIX =lockf=.
+POSIX record locks never conflict within the owning process, so calls using
+the same pathname namestring are additionally serialized by a process-wide
+mutex. Threads of one image using the same pathname namestring serialize, and
+separate processes exclude each other through the operating-system lock.
 
 * Scoped locks
 
@@ -31,7 +31,8 @@ conditions from the body propagate unchanged and still release the lock.
     (ls-flock:lease-release lease)))
 #+END_SRC
 
-A lease is a process-lifetime exclusive claim acquired without waiting.
+A lease is an exclusive claim acquired without waiting, held until it is
+released or its owner exits.
 When this process already holds a live lease on the pathname, or another
 process owns the lock, acquisition signals =FILE-LOCK-BUSY=, a subtype of
 =FILE-LOCK-ERROR=. =LEASE-RELEASE= is idempotent, =LEASE-HELD-P= reports
