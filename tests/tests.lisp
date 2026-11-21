@@ -130,8 +130,8 @@
 (defun tests--restart-reset (root)
   "An image init hook must forget a stale descriptor number without closing it."
   (let ((ls-flock::*flock-state* nil))
-    (let* ((pathname (merge-pathnames "restart-reset.lock" root))
-           (lease (lease-acquire pathname))
+    (let* ((pathname   (merge-pathnames "restart-reset.lock" root))
+           (lease      (lease-acquire pathname))
            (descriptor (ls-flock::lease--descriptor lease)))
       (unwind-protect
            (progn
@@ -188,35 +188,110 @@
                                                   (lambda () (values 'one 'two)))))
            "ordered aliases did not preserve body values")))
 
+#+win32
+(sb-alien:define-alien-routine ("CreateHardLinkW" tests--create-hard-link)
+    sb-alien:int
+  (alias (sb-alien:c-string :external-format :ucs-2le))
+  (target (sb-alien:c-string :external-format :ucs-2le))
+  (security (* t)))
+
+#+win32
+(sb-alien:define-alien-routine ("SetFileAttributesW" tests--set-file-attributes)
+    sb-alien:int
+  (pathname (sb-alien:c-string :external-format :ucs-2le))
+  (attributes (sb-alien:unsigned 32)))
+
+#+win32
+(defun tests--windows-aliases (root)
+  "Exercise real NTFS hard links and duplicate identities in an ordered group."
+  (let ((path (merge-pathnames "windows-held.lock" root))
+        (hard (merge-pathnames "windows-hard.lock" root)))
+    (with-file-lock (path)
+      (check (plusp (tests--create-hard-link (uiop:native-namestring hard)
+                                             (uiop:native-namestring path) nil))
+             "could not create the native hardlink fixture")
+      (multiple-value-bind (busy-p pid) (ls-flock:file-lock-busy-p hard)
+        (check (and busy-p (eql pid (ls-flock::flock--process-id)))
+               "hardlink alias did not identify its local holder")))
+    (check (equal '(one two)
+                  (multiple-value-list
+                   (ls-flock:call-with-file-locks
+                    (list path hard path)
+                    (lambda ()
+                      (dolist (alias (list path hard))
+                        (multiple-value-bind (busy-p pid) (ls-flock:file-lock-busy-p alias)
+                          (check (and busy-p (eql pid (ls-flock::flock--process-id)))
+                                 "ordered alias group did not hold its common file")))
+                      (values 'one 'two)))))
+           "ordered hardlink aliases did not preserve body values")
+    (check (not (ls-flock:file-lock-busy-p hard)) "ordered alias group did not release")))
+
+#+win32
+(defun tests--windows-access-errors (root)
+  "Distinguish real write-access denial from lock contention."
+  (let ((path (merge-pathnames "read-only.lock" root)))
+    (with-open-file (stream path :direction :output) (write-line "fixture" stream))
+    (unwind-protect
+         (progn
+           (check (plusp (tests--set-file-attributes (uiop:native-namestring path) 1))
+                  "could not mark the access-error fixture read-only")
+           (dolist (operation (list #'lease-acquire #'ls-flock:file-lock-busy-p))
+             (let ((condition (handler-case (progn (funcall operation path) nil)
+                                (ls-flock:file-lock-error (condition) condition))))
+               (check (and condition (not (typep condition 'file-lock-busy)))
+                      "access denial was not a typed non-busy lock error")
+               (check (equal path (ls-flock:file-lock-error-pathname condition))
+                      "access error did not identify the failed pathname"))))
+      (check (plusp (tests--set-file-attributes (uiop:native-namestring path) #x80))
+             "could not restore access-error fixture attributes"))))
+
+#+sbcl
+(defun tests--child-command (root)
+  "Start the owning source with its canonical dependency setup, without registry overrides."
+  (let* ((source (asdf:system-source-directory "ls-flock"))
+         (setup  (or (probe-file (merge-pathnames ".qlot/setup.lisp" source))
+                     (probe-file (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
+                     (error "The subprocess fixture needs the project's dependency setup."))))
+    (list (uiop:native-namestring sb-ext:*runtime-pathname*)
+          "--noinform" "--no-userinit" "--no-sysinit" "--non-interactive"
+          "--load" (uiop:native-namestring setup)
+          "--eval" (format nil "(asdf:load-asd ~S)" (merge-pathnames "ls-flock.asd" source))
+          "--eval" "(ql:quickload :ls-flock :silent t)"
+          "--eval" (format nil "(assert (equal ~S (asdf:system-source-directory :ls-flock)))" source)
+          "--eval" (format nil "(progn (ls-flock:lease-acquire ~S :guard-pathname ~S) ~
+                                     (with-open-file (stream ~S :direction :output) ~
+                                       (princ :ready stream)) (sleep 30))"
+                           (merge-pathnames "foreign-holder.lock" root)
+                           (merge-pathnames "foreign-guard.lock" root)
+                           (merge-pathnames "foreign-holder.ready" root)))))
+
 #+sbcl
 (defun tests--cross-process (root)
-  "Exercise a separate SBCL using ls-flock itself on POSIX and Windows."
+  "Exercise native foreign contention, unknown Windows PID, crash release, and reuse."
   (let* ((pathname (merge-pathnames "foreign-holder.lock" root))
          (guard    (merge-pathnames "foreign-guard.lock" root))
          (ready    (merge-pathnames "foreign-holder.ready" root))
-         (registry (mapcar #'asdf:system-source-directory '("ls-flock" "bordeaux-threads")))
-         (process  (uiop:launch-program
-                    (list "sbcl" "--noinform" "--non-interactive" "--eval" "(require :asdf)"
-                          "--eval" (format nil "(setf asdf:*central-registry* '~S)" registry)
-                          "--eval" (format nil "(asdf:initialize-output-translations '~S)"
-                                           `(:output-translations (t ,root) :ignore-inherited-configuration))
-                          "--eval" "(asdf:load-system :ls-flock)"
-                          "--eval" (format nil "(progn (ls-flock:lease-acquire ~S :guard-pathname ~S) ~
-                                                         (with-open-file (stream ~S :direction :output) ~
-                                                           (princ :ready stream)) (sleep 30))"
-                                           pathname guard ready))
-                    :output nil :error-output :output)))
+         (log      (merge-pathnames "foreign-holder.log" root))
+         (process  (uiop:launch-program (tests--child-command root)
+                                       :output log :error-output :output)))
     (unwind-protect
          (progn
            (sb-ext:with-timeout 20
              (loop until (probe-file ready) do
-               (unless (uiop:process-alive-p process) (error "Lock holder exited before readiness"))
+               (unless (uiop:process-alive-p process)
+                 (error "Lock holder exited before readiness: ~A" (uiop:read-file-string log)))
                (sleep 0.05)))
            (multiple-value-bind (busy-p pid) (ls-flock:file-lock-busy-p pathname :guard-pathname guard)
              (check busy-p "foreign lock was not busy")
              #+win32 (check (null pid) "Windows reported an unobserved foreign PID")
              #-win32 (when pid
-                       (check (= pid (uiop:process-info-pid process)) "wrong foreign owner PID"))))
+                       (check (= pid (uiop:process-info-pid process)) "wrong foreign owner PID")))
+           (let ((condition (handler-case (lease-acquire pathname :guard-pathname guard)
+                              (file-lock-busy (condition) condition))))
+             (check (typep condition 'file-lock-busy) "foreign acquisition was not typed busy")
+             #+win32
+             (check (null (ls-flock:file-lock-busy-owner-pid condition))
+                    "Windows fabricated a PID in its busy condition")))
       (when (uiop:process-alive-p process)
         (uiop:terminate-process process :urgent t))
       (sb-ext:with-timeout 5 (uiop:wait-process process)))
@@ -236,14 +311,26 @@
             (uiop:temporary-directory)))))
     (unwind-protect
          (progn
-           (tests--scoped-locks root)
-           (tests--thread-exclusion root)
-           (tests--leases root)
-           (tests--guarded-leases root)
-           #+(and sbcl (not win32)) (tests--fork-reset root)
-            #+(and sbcl (not win32)) (tests--restart-reset root)
-           #+(and sbcl (not win32)) (tests--aliases root)
-           #+sbcl (tests--cross-process root))
+           (dolist (test (list (list "SCOPED" #'tests--scoped-locks)
+                               (list "THREADS" #'tests--thread-exclusion)
+                               (list "LEASES" #'tests--leases)
+                               (list "GUARDED-CLEANUP" #'tests--guarded-leases)
+                               #+(and sbcl (not win32))
+                               (list "FORK-RESET" #'tests--fork-reset)
+                               #+(and sbcl (not win32))
+                               (list "RESTART-RESET" #'tests--restart-reset)
+                               #+(and sbcl (not win32))
+                               (list "POSIX-ALIASES" #'tests--aliases)
+                               #+win32
+                               (list "NTFS-HARDLINK-GROUP" #'tests--windows-aliases)
+                               #+win32
+                               (list "TYPED-ACCESS-ERRORS" #'tests--windows-access-errors)
+                               #+sbcl
+                               (list "FOREIGN-BUSY-CRASH-REUSE" #'tests--cross-process)))
+             (funcall (second test) root)
+             (format t "~&PASS ~A~%" (first test)))
+           #+win32
+           (format t "~&SKIP POSIX-FORK-RESTART: unavailable native POSIX descriptor fixtures.~%"))
       (uiop:delete-directory-tree root
                                   :validate          t
                                   :if-does-not-exist :ignore)))

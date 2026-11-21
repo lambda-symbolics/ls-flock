@@ -23,7 +23,8 @@
 (define-condition file-lock-busy (file-lock-error)
   ((owner-pid :initarg :owner-pid :initform nil :reader file-lock-busy-owner-pid
               :documentation "Positive PID of an observed holder, or NIL if unknown.")
-   (local-lease :initarg :local-lease :initform nil :reader flock--busy-local-lease))
+   (local-lease :initarg :local-lease :initform nil :reader flock--busy-local-lease
+                :documentation "The observed local lease, or NIL for an external holder."))
   (:documentation "Another holder owns the advisory lock right now."))
 
 (defun flock--busy (pathname &optional owner-pid local-lease)
@@ -41,6 +42,7 @@
 ;;;; -- Process-Qualified Registry --
 
 (defstruct (flock-state (:constructor flock--make-state (pid)))
+  "Registry and descriptor bookkeeping owned by one process."
   pid
   (mutex (bordeaux-threads:make-lock "ls-flock registry"))
   (held (make-hash-table :test #'equal))
@@ -50,13 +52,20 @@
   "The process-qualified registry of all scoped and long-lived acquisitions.")
 
 (defclass lease ()
-  ((pathname :initarg :pathname :reader lease-pathname)
-   (descriptor :initarg :descriptor :accessor lease--descriptor)
-   (identity :initarg :identity :reader lease--identity)
-   (state :initarg :state :reader lease--state)
-   (guard :initarg :guard :reader lease--guard)
-   (thread :initarg :thread :reader lease--thread)
-   (deferred :initform nil :accessor lease--deferred))
+  ((pathname :initarg :pathname :reader lease-pathname
+             :documentation "The pathname supplied at acquisition.")
+   (descriptor :initarg :descriptor :accessor lease--descriptor
+               :documentation "The open native descriptor, or NIL after release.")
+   (identity :initarg :identity :reader lease--identity
+             :documentation "The native identity of the locked file.")
+   (state :initarg :state :reader lease--state
+          :documentation "The process registry that owns this lease.")
+   (guard :initarg :guard :reader lease--guard
+          :documentation "The pathname of the optional cleanup guard.")
+   (thread :initarg :thread :reader lease--thread
+           :documentation "The owner thread of a scoped lease, or NIL for an explicit lease.")
+   (deferred :initform nil :accessor lease--deferred
+             :documentation "Additional descriptors kept open until the native lock is released."))
   (:documentation "An exclusive native file lock."))
 
 (defun reset-after-restart ()
@@ -100,7 +109,7 @@
   "Try a native acquisition while serializing identity and descriptor operations."
   (let ((state (flock--current-state)))
     (bordeaux-threads:with-lock-held ((flock-state-mutex state))
-      (let* ((held (flock-state-held state))
+      (let* ((held  (flock-state-held state))
              (local (gethash (flock--path-key pathname) held)))
         (when local (flock--busy pathname (flock-state-pid state) local))
         (let ((descriptor (flock--open pathname mode existing-only-p)))
@@ -135,9 +144,9 @@
     (let ((state (lease--state lease)))
       (bordeaux-threads:with-lock-held ((flock-state-mutex state))
         (let ((descriptor (lease--descriptor lease))
-              (pathname (lease-pathname lease))
-              (identity (lease--identity lease))
-              (held (flock-state-held state)))
+              (pathname   (lease-pathname lease))
+              (identity   (lease--identity lease))
+              (held       (flock-state-held state)))
           (when (and descriptor (eq lease (gethash identity held)))
             (let ((remove-p (and unlink-p
                                  (handler-case (equal identity (flock--path-key pathname))
