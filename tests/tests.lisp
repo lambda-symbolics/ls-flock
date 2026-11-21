@@ -36,6 +36,7 @@
            "a scoped lock did not return its body value")
     (check (probe-file pathname)
            "the lock file was not left behind for later holders")
+    #-win32
     (check (= (logand (sb-posix:stat-mode
                        (sb-posix:stat (namestring pathname)))
                       #o777)
@@ -95,80 +96,133 @@
       (lease-release replacement)))
   nil)
 
+#+(and sbcl (not win32))
 (defun tests--fork-reset (root)
-  "Exercise the fork child table reset without an actual fork."
+  "An actual fork discards child state without dropping the parent's kernel lock."
   (let* ((pathname (merge-pathnames "fork-reset.lock" root))
-         (lease    (lease-acquire pathname)))
-    (reset-after-fork)
-    (check (not (lease-held-p lease))
-           "reset did not mark inherited leases released")
-    (let ((replacement (lease-acquire pathname)))
-      (check (lease-held-p replacement)
-             "reset state blocked a fresh acquisition")
-      (lease-release replacement)))
-  nil)
+         (lease    (lease-acquire pathname))
+         (pid      (bordeaux-threads:with-lock-held
+                       ((ls-flock::flock-state-mutex ls-flock::*flock-state*))
+                     (let ((child (sb-posix:fork)))
+                       (when (zerop child)
+                         ;; Reset before even unwinding the inherited mutex scope.
+                         (sb-posix:exit
+                          (handler-case
+                              (progn
+                                (reset-after-fork)
+                                (if (and (not (lease-held-p lease))
+                                         (ls-flock:file-lock-busy-p pathname))
+                                    0 1))
+                            (error () 2))))
+                       child))))
+    (unwind-protect
+         (multiple-value-bind (reaped status)
+             (sb-ext:with-timeout 5 (sb-posix:waitpid pid 0))
+           (check (and (= reaped pid) (zerop status)) "the fork child did not observe its parent lock")
+           (setf pid nil)
+           (check (lease-held-p lease) "fork reset abandoned the parent's lease"))
+      (when pid
+        (ignore-errors (sb-posix:kill pid sb-posix:sigkill))
+        (ignore-errors (sb-posix:waitpid pid 0)))
+      (lease-release lease))))
 
-(defun tests--cross-process (root)
-  "Prove leases exclude other processes, not only other threads."
-  (let* ((pathname (merge-pathnames "processes.lock" root))
-         (program
-           (format nil
-                   "(let ((descriptor (sb-posix:open ~S ~
-                                       (logior sb-posix:o-creat ~
-                                               sb-posix:o-rdwr) ~
-                                       #o600))) ~
-                      (handler-case ~
-                          (progn ~
-                            (sb-posix:lockf descriptor sb-posix:f-tlock 0) ~
-                            (sb-posix:exit 0)) ~
-                        (error () (sb-posix:exit 7))))"
-                   (namestring pathname)))
-         (lease    (lease-acquire pathname)))
-    (flet ((probe-exit-code ()
-             (nth-value 2
-                        (uiop:run-program
-                         (list "sbcl" "--noinform" "--non-interactive"
-                               "--no-sysinit" "--no-userinit"
-                               "--eval" "(require :sb-posix)"
-                               "--eval" program)
-                         :ignore-error-status t))))
+#+(and sbcl (not win32))
+(defun tests--restart-reset (root)
+  "An image init hook must forget a stale descriptor number without closing it."
+  (let ((ls-flock::*flock-state* nil))
+    (let* ((pathname (merge-pathnames "restart-reset.lock" root))
+           (lease (lease-acquire pathname))
+           (descriptor (ls-flock::lease--descriptor lease)))
       (unwind-protect
-           (check (= (probe-exit-code) 7)
-                  "another process acquired a held lease's lock")
-        (lease-release lease))
-      (check (= (probe-exit-code) 0)
-             "another process could not lock a released lease file")))
+           (progn
+             (check (member 'ls-flock:reset-after-restart sb-ext:*init-hooks*)
+                    "saved-image init hook was not installed")
+             (ls-flock:reset-after-restart)
+             (check (not (lease-held-p lease)) "restart left a saved lease live")
+             (lease-release lease)
+             (check (sb-posix:fstat descriptor) "restart closed a potentially reused descriptor"))
+        (ls-flock::flock--close descriptor)))))
+
+(defun tests--guarded-leases (root)
+  "Check persistent probes, guarded unlink, stale releases, and fallback."
+  (let ((pathname (merge-pathnames "guarded.lock" root))
+        (guard    (merge-pathnames "guard.lock" root)))
+    (check (not (ls-flock:file-lock-busy-p pathname)) "missing probe reported busy")
+    (check (not (probe-file pathname)) "missing probe created a file")
+    (let ((lease (lease-acquire pathname :guard-pathname guard)))
+      (check (ls-flock:file-lock-busy-p pathname :guard-pathname guard) "guarded lease not busy")
+      (lease-release lease)
+      (check (not (probe-file pathname)) "guarded release did not remove the file")
+      (let ((successor (lease-acquire pathname :guard-pathname guard)))
+        (lease-release lease)
+        (check (and (probe-file pathname) (lease-held-p successor)) "stale release touched successor")
+        (call-with-file-lock guard (lambda () (lease-release successor)))
+        (check (and (not (lease-held-p successor)) (probe-file pathname))
+               "failed guard acquisition did not release without unlinking")))
+    (check (not (ls-flock:file-lock-busy-p pathname :guard-pathname guard)) "stale file reported busy")
+    (check (and (not (probe-file pathname)) (probe-file guard)) "guarded free probe did not clean up")))
+
+#+(and sbcl (not win32))
+(defun tests--aliases (root)
+  "Resolve hard and symbolic aliases without closing a descriptor on the held inode."
+  (let ((path (merge-pathnames "held.lock" root))
+        (hard (merge-pathnames "hard.lock" root))
+        (soft (merge-pathnames "soft.lock" root)))
+    (call-with-file-lock
+     path
+     (lambda ()
+       (sb-posix:link (namestring path) (namestring hard))
+       (sb-posix:symlink (namestring path) (namestring soft))
+       (dolist (alias (list hard soft))
+         (multiple-value-bind (busy-p pid) (ls-flock:file-lock-busy-p alias)
+           (check (and busy-p (= pid (sb-posix:getpid))) "alias did not report its local owner")))
+       (let ((pid (sb-posix:fork)))
+         (when (zerop pid)
+           (sb-posix:exit (if (ls-flock:file-lock-busy-p hard) 0 3)))
+         (multiple-value-bind (reaped status)
+             (sb-ext:with-timeout 5 (sb-posix:waitpid pid 0))
+           (check (and (= reaped pid) (zerop status)) "alias probe dropped the kernel lock")))))
+    (check (equal '(one two)
+                  (multiple-value-list
+                   (ls-flock:call-with-file-locks (list path hard soft path)
+                                                  (lambda () (values 'one 'two)))))
+           "ordered aliases did not preserve body values")))
+
+#+sbcl
+(defun tests--cross-process (root)
+  "Exercise a separate SBCL using ls-flock itself on POSIX and Windows."
   (let* ((pathname (merge-pathnames "foreign-holder.lock" root))
+         (guard    (merge-pathnames "foreign-guard.lock" root))
          (ready    (merge-pathnames "foreign-holder.ready" root))
-         (holder
-           (format nil
-                   "(let ((descriptor (sb-posix:open ~S ~
-                                       (logior sb-posix:o-creat ~
-                                               sb-posix:o-rdwr) ~
-                                       #o600))) ~
-                      (sb-posix:lockf descriptor sb-posix:f-lock 0) ~
-                      (with-open-file (stream ~S :direction :output ~
-                                              :if-does-not-exist :create) ~
-                        (princ :ready stream)) ~
-                      (sleep 5) ~
-                      (sb-posix:exit 0))"
-                   (namestring pathname)
-                   (namestring ready)))
-         (process
-           (uiop:launch-program
-            (list "sbcl" "--noinform" "--non-interactive"
-                  "--no-sysinit" "--no-userinit"
-                  "--eval" "(require :sb-posix)"
-                  "--eval" holder))))
+         (registry (mapcar #'asdf:system-source-directory '("ls-flock" "bordeaux-threads")))
+         (process  (uiop:launch-program
+                    (list "sbcl" "--noinform" "--non-interactive" "--eval" "(require :asdf)"
+                          "--eval" (format nil "(setf asdf:*central-registry* '~S)" registry)
+                          "--eval" (format nil "(asdf:initialize-output-translations '~S)"
+                                           `(:output-translations (t ,root) :ignore-inherited-configuration))
+                          "--eval" "(asdf:load-system :ls-flock)"
+                          "--eval" (format nil "(progn (ls-flock:lease-acquire ~S :guard-pathname ~S) ~
+                                                         (with-open-file (stream ~S :direction :output) ~
+                                                           (princ :ready stream)) (sleep 30))"
+                                           pathname guard ready))
+                    :output nil :error-output :output)))
     (unwind-protect
          (progn
-           (loop until (probe-file ready)
-                 do (sleep 0.05))
-           (check (signals file-lock-busy (lease-acquire pathname))
-                  "a lock held by another process was not reported busy"))
-      (uiop:terminate-process process :urgent t)
-      (ignore-errors (uiop:wait-process process))))
-  nil)
+           (sb-ext:with-timeout 20
+             (loop until (probe-file ready) do
+               (unless (uiop:process-alive-p process) (error "Lock holder exited before readiness"))
+               (sleep 0.05)))
+           (multiple-value-bind (busy-p pid) (ls-flock:file-lock-busy-p pathname :guard-pathname guard)
+             (check busy-p "foreign lock was not busy")
+             #+win32 (check (null pid) "Windows reported an unobserved foreign PID")
+             #-win32 (when pid
+                       (check (= pid (uiop:process-info-pid process)) "wrong foreign owner PID"))))
+      (when (uiop:process-alive-p process)
+        (uiop:terminate-process process :urgent t))
+      (sb-ext:with-timeout 5 (uiop:wait-process process)))
+    (check (probe-file pathname) "crash fixture did not leave its lock file")
+    (lease-release (lease-acquire pathname :guard-pathname guard))
+    (check (not (probe-file pathname)) "could not reuse and clean up crashed holder's file")))
 
 (defun run-tests ()
   "Run every ls-flock regression test."
@@ -185,7 +239,10 @@
            (tests--scoped-locks root)
            (tests--thread-exclusion root)
            (tests--leases root)
-           (tests--fork-reset root)
+           (tests--guarded-leases root)
+           #+(and sbcl (not win32)) (tests--fork-reset root)
+            #+(and sbcl (not win32)) (tests--restart-reset root)
+           #+(and sbcl (not win32)) (tests--aliases root)
            #+sbcl (tests--cross-process root))
       (uiop:delete-directory-tree root
                                   :validate          t

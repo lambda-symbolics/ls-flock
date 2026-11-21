@@ -1,11 +1,11 @@
 #+TITLE: ls-flock
 #+STARTUP: content
 
-=ls-flock= provides process-shared advisory file locks over POSIX =lockf=,
-paired with the in-process mutex that POSIX record locks silently omit:
-record locks never conflict within the owning process, so every lock file
-carries one process-wide mutex too. Two threads of one image and two
-processes on one host exclude each other the same way.
+=ls-flock= provides process-shared advisory file locks over POSIX =lockf=
+and Windows =LockFileEx=. The process registry recognizes aliases by file
+identity and serializes scoped locks and leases together. On POSIX, open
+lock files only through ls-flock: closing any other descriptor on a held
+inode can release the process's record lock.
 
 * Scoped locks
 
@@ -21,6 +21,9 @@ Scoped locks wait for other holders. The lock file is created with mode
 =0600= (override with =:mode=) and intentionally left behind on release so
 later holders can reuse it. Acquisition failures signal =FILE-LOCK-ERROR=;
 conditions from the body propagate unchanged and still release the lock.
+
+Use =CALL-WITH-FILE-LOCKS= for an ordered group. It takes each file identity
+once, in the order supplied, and releases the acquired subset on failure.
 
 * Exclusive leases
 
@@ -38,8 +41,22 @@ process owns the lock, acquisition signals =FILE-LOCK-BUSY=, a subtype of
 liveness, and a crashed owner's leftover lock file is reusable immediately
 because the operating system drops the lock with the process.
 
-A fork child inherits the parent's tables but none of its POSIX locks;
-call =RESET-AFTER-FORK= in the child before using ls-flock there.
+=FILE-LOCK-BUSY-OWNER-PID= returns the verified local PID, an observed
+foreign POSIX PID when available, or =NIL=. Busy is authoritative even
+if no owner PID is available. =FILE-LOCK-BUSY-P= probes an existing file
+without creating it by default and returns busy and the optional PID.
+
+Use =:guard-pathname= on both =LEASE-ACQUIRE= and =FILE-LOCK-BUSY-P= when
+the lease file should be removed on normal release. All participants must
+use the same persistent guard; the probe and release hold it through
+identity-checked unlink. Unlink is best effort; if the guard is unavailable,
+release still unlocks the file without unlinking it.
+
+A fork child inherits descriptor numbers but none of the parent's POSIX
+locks. =RESET-AFTER-FORK= closes the child's copies without taking inherited
+mutexes; the first acquisition also detects a PID change. A saved image
+instead uses =RESET-AFTER-RESTART= (installed as an SBCL init hook), which
+forgets stale numbers without closing them.
 
 * Tests
 
@@ -47,8 +64,12 @@ call =RESET-AFTER-FORK= in the child before using ls-flock there.
 (asdf:test-system :ls-flock)
 #+END_SRC
 
-The suite includes a cross-process probe that spawns a second Lisp to
-prove operating-system-level exclusion, not only thread-level exclusion.
+The cross-process test starts a second SBCL with the same ls-flock source,
+waits for bounded readiness, verifies contention, terminates the holder,
+and checks stale-file reuse. Run it on native Windows with SBCL on PATH
+and a local NTFS temporary directory. Verify foreign owner PID is unknown,
+then repeat the ordered-group and busy probes with NTFS hard-link aliases.
+The POSIX suite additionally checks real fork and hard/symbolic-link aliases.
 
 * Development
 

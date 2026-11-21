@@ -27,6 +27,14 @@
   (flags (sb-alien:unsigned 32))
   (template (sb-alien:signed 64)))
 
+(sb-alien:define-alien-routine ("GetCurrentProcessId" flock--process-id)
+    (sb-alien:unsigned 32))
+
+(sb-alien:define-alien-routine ("GetFileInformationByHandle" flock--file-information)
+    sb-alien:int
+  (handle (sb-alien:signed 64))
+  (information (* t)))
+
 (sb-alien:define-alien-routine ("LockFileEx" flock--lock-file-ex)
     sb-alien:int
   (handle (sb-alien:signed 64))
@@ -76,40 +84,47 @@ can open the lock file and its directory can be deleted while it is held.")
       (setf (sb-alien:deref overlapped index) 0))
     (funcall function (sb-alien:alien-sap overlapped))))
 
-(defun flock--open (pathname mode)
-  "Return an open handle for lock file PATHNAME, creating it when missing.
+(defun flock--descriptor-key (descriptor)
+  "Return the volume serial and file index from the locking handle."
+  (sb-alien:with-alien ((information (sb-alien:array (sb-alien:unsigned 32) 13)))
+    (when (zerop (flock--file-information descriptor (sb-alien:alien-sap information)))
+      (error "GetFileInformationByHandle failed: Windows error ~D" (flock--get-last-error)))
+    (cons (sb-alien:deref information 7)
+          (logior (ash (sb-alien:deref information 11) 32)
+                  (sb-alien:deref information 12)))))
 
-MODE is accepted for symmetry with the POSIX half; Windows has no
-permission bits to apply on creation."
+(defun flock--open-handle (pathname access existing-only-p)
+  "Open a file handle, distinguishing an absent existing-only file from failure."
+  (let ((handle (flock--create-file (uiop:native-namestring pathname)
+                                    access *flock-share-read-write* nil
+                                    (if existing-only-p 3 *flock-open-always*)
+                                    *flock-attribute-normal* 0)))
+    (if (/= handle *flock-invalid-handle*)
+        handle
+        (let ((code (flock--get-last-error)))
+          (unless (and existing-only-p (member code '(2 3)))
+            (flock--fail pathname "Could not open the lock file: Windows error ~D" code))))))
+
+(defun flock--path-key (pathname)
+  "Observe PATHNAME through a metadata-only handle, if it exists."
+  (let ((handle (flock--open-handle pathname 0 t)))
+    (when handle
+      (unwind-protect
+           (handler-case (flock--descriptor-key handle)
+             (error (cause)
+               (flock--fail pathname "Could not identify the lock file: ~A" cause)))
+        (flock--close handle)))))
+
+(defun flock--open (pathname mode existing-only-p)
+  "Open PATHNAME for locking, returning NIL for an absent existing-only file."
   (declare (ignore mode))
   (handler-case
       (progn
-        (ensure-directories-exist pathname)
-        (let ((handle (flock--create-file (uiop:native-namestring pathname)
-                                          *flock-generic-read-write*
-                                          *flock-share-read-write*
-                                          nil
-                                          *flock-open-always*
-                                          *flock-attribute-normal*
-                                          0)))
-          (when (= handle *flock-invalid-handle*)
-            (flock--fail pathname "Could not open the lock file: Windows error ~D"
-                         (flock--get-last-error)))
-          handle))
-    (file-lock-error (condition)
-      (error condition))
+        (unless existing-only-p (ensure-directories-exist pathname))
+        (flock--open-handle pathname *flock-generic-read-write* existing-only-p))
+    (file-lock-error (condition) (error condition))
     (error (cause)
       (flock--fail pathname "Could not open the lock file: ~A" cause))))
-
-(defun flock--lock (descriptor pathname)
-  "Wait until DESCRIPTOR holds PATHNAME's exclusive lock."
-  (flock--call-with-overlapped
-   (lambda (overlapped)
-     (when (zerop (flock--lock-file-ex descriptor *flock-exclusive-lock* 0 1 0
-                                       overlapped))
-       (flock--fail pathname "Could not acquire the lock: Windows error ~D"
-                    (flock--get-last-error)))))
-  nil)
 
 (defun flock--try-lock (descriptor pathname)
   "Take PATHNAME's exclusive lock on DESCRIPTOR or signal FILE-LOCK-BUSY."
