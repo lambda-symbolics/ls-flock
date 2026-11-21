@@ -258,12 +258,15 @@
           "--eval" (format nil "(asdf:load-asd ~S)" (merge-pathnames "ls-flock.asd" source))
           "--eval" "(ql:quickload :ls-flock :silent t)"
           "--eval" (format nil "(assert (equal ~S (asdf:system-source-directory :ls-flock)))" source)
-          "--eval" (format nil "(progn (ls-flock:lease-acquire ~S :guard-pathname ~S) ~
-                                     (with-open-file (stream ~S :direction :output) ~
-                                       (princ :ready stream)) (sleep 30))"
-                           (merge-pathnames "foreign-holder.lock" root)
-                           (merge-pathnames "foreign-guard.lock" root)
-                           (merge-pathnames "foreign-holder.ready" root)))))
+          "--eval" (with-standard-io-syntax
+                     (write-to-string
+                      `(progn
+                         (ls-flock:lease-acquire ,(merge-pathnames "foreign-holder.lock" root)
+                                                :guard-pathname ,(merge-pathnames "foreign-guard.lock" root))
+                         (with-open-file (stream ,(merge-pathnames "foreign-holder.ready" root)
+                                                 :direction :output)
+                           (princ :ready stream))
+                         (sleep 30)))))))
 
 #+sbcl
 (defun tests--cross-process (root)
